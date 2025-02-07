@@ -1,7 +1,7 @@
 import numpy as np
 import source.vis as vis
 
-def applyDomainTransformFilter_yaxis(a, dt, input_img):
+def applyDomainTransformFilter_yaxis(a, dt, input_img, normalize = True):
     fwd = input_img*0
     bwd = input_img*0
     N,M = np.shape(input_img)
@@ -15,12 +15,15 @@ def applyDomainTransformFilter_yaxis(a, dt, input_img):
     bwd[:,M-1] = a[:,M-1]*input_img[:,M-1]
     for y in range(M-2,-1,-1):
         bwd[:,y] = a[:,y+1]*input_img[:,y+1]*np.exp(-abs(dt[:,y+1])) + np.exp(-abs(dt[:,y+1]))*bwd[:,y+1]
+    if normalize:
+        return a*(fwd + bwd)
+    else:
+        return (fwd + bwd)
 
-    return a*(fwd + bwd)
 
-def applyDomainTransformFilter_xaxis(a, dt, input_img):
+def applyDomainTransformFilter_xaxis(a, dt, input_img, normalize = True):
     img = applyDomainTransformFilter_yaxis(np.transpose(a), 
-                                           np.transpose(dt), np.transpose(input_img))
+                                           np.transpose(dt), np.transpose(input_img), normalize)
     return np.transpose(img)
 
 def getDomainTransformCoefficients(luminance, sigma_s, sigma_r, alpha_r, tol = 1e-3):
@@ -40,6 +43,8 @@ def getDomainTransformCoefficients(luminance, sigma_s, sigma_r, alpha_r, tol = 1
 
     dt_x = np.sqrt((sigma_h/sigma_s)**2 + (sigma_h/sigma_r * abs(dimg_dx)**alpha_r)**2 )
     dt_y = np.sqrt((sigma_h/sigma_s)**2 + (sigma_h/sigma_r * abs(dimg_dy)**alpha_r)**2 )
+
+    
     dt_x[0,:] = 0
     dt_y[:,0] = 0
 
@@ -51,8 +56,8 @@ def getDomainTransformCoefficients(luminance, sigma_s, sigma_r, alpha_r, tol = 1
     max_it = 1000
     while err>tol and it < max_it:
         it += 1
-        filtered_y = applyDomainTransformFilter_yaxis(ay, dt_y, ones_mat)
-        filtered_x = applyDomainTransformFilter_xaxis(ax, dt_x, ones_mat)
+        filtered_y = applyDomainTransformFilter_yaxis(ay, dt_y, ones_mat, normalize=False)
+        filtered_x = applyDomainTransformFilter_xaxis(ax, dt_x, ones_mat, normalize= False)
         #check tolerance
         if it%5==0:
             err_y = np.linalg.norm(filtered_y*ay-ones_mat)/np.linalg.norm(ones_mat)
@@ -61,8 +66,9 @@ def getDomainTransformCoefficients(luminance, sigma_s, sigma_r, alpha_r, tol = 1
         ay = (ay + 1/filtered_y)/2.0
         ax = (ax + 1/filtered_x)/2.0
     if err>tol:
-        return ax, ay, dt_x, dt_y, Wx, Wy, success
-    success = True
+        success = False
+    else:
+        success = True
         
             
 
@@ -84,7 +90,7 @@ def get1D_DomainTransformCoefficients(N, dt_y, tol = 1e-3):
     max_it = 1000
     while err>tol and it < max_it:
         it += 1
-        filtered_y = applyDomainTransformFilter_yaxis(ay, dt_y, ones_mat)
+        filtered_y = applyDomainTransformFilter_yaxis(ay, dt_y, ones_mat, normalize=False)
         #check tolerance
         if it%5==0:
             err = np.linalg.norm(filtered_y*ay-ones_mat)/np.linalg.norm(ones_mat)
@@ -95,7 +101,7 @@ def get1D_DomainTransformCoefficients(N, dt_y, tol = 1e-3):
     Wy[:,1:] = np.exp(-abs(dt_y[:,1:]))/(1- np.exp(-2*abs(dt_y[:,1:])))/(ay[:,1:]*ay[:,0:-1])
 
     
-    return Wy
+    return ay, Wy
     
 
 def tikhonov1D_y(input_img, W):
@@ -134,6 +140,7 @@ def tikhonov1D_x(input_img, W):
 def admm_method_gastal(input_img, sigma_s, sigma_r, alpha_r, tol=1e-3, rho=10, bound = 0, channels = 1):
   
     luminance = vis.get_luminance(input_img)
+
     mono_image = luminance*0
     ax, ay, dt_x, dt_y, Wx, Wy, success = getDomainTransformCoefficients(luminance, sigma_s, sigma_r, alpha_r, tol = tol)
     max_it = 10000
