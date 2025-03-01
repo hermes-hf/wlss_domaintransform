@@ -2,6 +2,41 @@ import numpy as np
 import source.vis as vis
 
 
+def multiply2by2(A11, A12, A21, A22, B11, B12, B21, B22):
+    C11 = A11*B11 + A12*B21
+    C12 = A11*B12 + A12*B22
+    C21 = A21*B11 + A22*B21
+    C22 = A21*B12 + A22*B22
+
+    return C11, C12, C21, C22
+
+
+def normalize2by2(A11, A12, A21, A22):
+    C = np.maximum(A11, A12)
+    C = np.maximum(C, A21)
+    C = np.maximum(C, A22)
+    return A11/C, A12/C, A21/C, A22/C
+
+
+def makeA21positive(A11, A12, A21, A22):
+    return A11*A21, A12*A21, A21*A21, A22*A21
+
+
+def inverse2by2(A11, A12, A21, A22):
+    det = A11*A22 - A12*A21
+    return A22/det, -A12/det, -A21/det, A11/det
+
+
+def quadraticSolve(A11, A12, A21, A22):
+    # solution to B(x) = (A11 B(x) + A12)/(A21 B(x) + A22)
+    return (A11-A22 + np.sqrt(A11**2 + 4*A12*A21 - 2*A11*A22+A22**2))/(2*A21)
+
+
+def linearSolveBwd(A11, A12, A21, A22):
+    # solution to bwd(x) = (A11 bwd(x) + A12)/A22
+    return A12/(A22-A11)
+
+
 def applyDomainTransformFilter_yaxis(a, dt, input_img, normalize=True):
     fwd = input_img*0
     bwd = input_img*0
@@ -114,37 +149,147 @@ def get1D_DomainTransformCoefficients(N, dt_y, tol=1e-3):
     return ay, Wy
 
 
-def tikhonov1D_y(input_img, W):
+def compute_circularB(W):
+    # compute B[0] using fwd recursion B[x] from B[x-1], it is easier to solve than the usual bwd recursion
     M, N = np.shape(W)
-    A = W*0
     B = W*0
-    C = W*1
 
-    # compute B
-    B[:, N-1] = 1 + W[:, N-1]
-    for y in range(N-2, -1, -1):
-        B[:, y] = 1 + W[:, y] + W[:, y+1] - W[:, y+1]**2/(B[:, y+1])
+    # compute B[0]: must apply matrices from 0 to N-1
+    # buffer matrices for computing B
+    # start with identity matrix
+    A11 = W[:, 0]*0 + 1
+    A12 = 0*A11
+    A21 = 0*A11
+    A22 = 1*A11
 
-    # compute A
-    A[:, 0:-1] = W[:, 1:]/B[:, 1:]
-    A[:, -1] = 0
+    for k in range(N):
+        y = (0-k) % N
+        B11 = A11*0
+        B12 = W[:, y]**2
+        B21 = A11*0 - 1
+        B22 = 1 + W[:, (y-1) % N] + W[:, y]
 
-    # bwd filter
-    bwd = input_img*1
-    for y in range(N-2, -1, -1):
+        A11, A12, A21, A22 = multiply2by2(
+            A11, A12, A21, A22, B11, B12, B21, B22)
+        A11, A12, A21, A22 = makeA21positive(A11, A12, A21, A22)
+        A11, A12, A21, A22 = normalize2by2(A11, A12, A21, A22)
+
+    # solve quadratic equation for B[0]
+    B[:, 0] = quadraticSolve(A11, A12, A21, A22)
+
+    # compute other points from B0:
+    B[:, N-1] = 1 + W[:, N-1] + W[:, 0] - W[:, 0]**2/B[:, 0]
+
+    for y in range(N-2, 0, -1):
+        B[:, y] = 1 + W[:, y] + W[:, y+1] - W[:, y+1]**2/B[:, y+1]
+
+    return B
+
+
+def compute_circularBwd(input_img, A):
+    M, N = np.shape(input_img)
+    bwd = input_img*0
+
+    A11 = A[:, 0]*0 + 1
+    A12 = 0*A11
+    A21 = 0*A11
+    A22 = 1*A11
+
+    for k in range(1, N+1):
+        y = (0-k) % N
+        B11 = A11*0 + 1
+        B12 = -input_img[:, y]
+        B21 = A11*0
+        B22 = A[:, y]
+
+        A11, A12, A21, A22 = multiply2by2(
+            A11, A12, A21, A22, B11, B12, B21, B22)
+        A11, A12, A21, A22 = normalize2by2(A11, A12, A21, A22)
+
+    # solve linear equation for bwd[0]
+    bwd[:, 0] = linearSolveBwd(A11, A12, A21, A22)
+
+    # compute other points from bwdd0:
+    bwd[:, N-1] = A[:, N-1]*bwd[:, 0] + input_img[:, N-1]
+
+    for y in range(N-2, 0, -1):
         bwd[:, y] = A[:, y]*bwd[:, y+1] + input_img[:, y]
+    return bwd
 
-    fwd = bwd/B
+
+def compute_circularFwd(bwd, B, C):
+    M, N = np.shape(bwd)
+    fwd = bwd*0
+
+    A11 = B[:, 0]*0 + 1
+    A12 = 0*A11
+    A21 = 0*A11
+    A22 = 1*A11
+
+    for y in range(1, N+1):
+        B11 = B[:, y % N]
+        B12 = -bwd[:, y % N]
+        B21 = A11*0
+        B22 = C[:, y % N]
+
+        A11, A12, A21, A22 = multiply2by2(
+            A11, A12, A21, A22, B11, B12, B21, B22)
+        A11, A12, A21, A22 = normalize2by2(A11, A12, A21, A22)
+    # solve linear equation for fwd[0]
+    fwd[:, 0] = linearSolveBwd(A11, A12, A21, A22)
+
+    # compute other poitns from fwd[0]
     for y in range(1, N):
         fwd[:, y] = (bwd[:, y] + C[:, y]*fwd[:, y-1])/B[:, y]
 
     return fwd
 
 
-def tikhonov1D_x(input_img, W):
+def tikhonov1D_y(input_img, W, mode='truncate'):
+    if mode == 'truncate':
+        M, N = np.shape(W)
+        A = W*0
+        B = W*0
+        C = W*1
+
+        # compute B
+        B[:, N-1] = 1 + W[:, N-1]
+        for y in range(N-2, -1, -1):
+            B[:, y] = 1 + W[:, y] + W[:, y+1] - W[:, y+1]**2/(B[:, y+1])
+
+        # compute A
+        A[:, 0:-1] = W[:, 1:]/B[:, 1:]
+        A[:, -1] = 0
+
+        # bwd filter
+        bwd = input_img*1
+        for y in range(N-2, -1, -1):
+            bwd[:, y] = A[:, y]*bwd[:, y+1] + input_img[:, y]
+
+        fwd = bwd/B
+        for y in range(1, N):
+            fwd[:, y] = (bwd[:, y] + C[:, y]*fwd[:, y-1])/B[:, y]
+
+        return fwd
+
+    elif mode == 'circular':
+        M, N = np.shape(W)
+        A = W*0
+        B = W*0
+        C = W*1
+
+        B = compute_circularB(W)
+        A = np.roll(W, -1, axis=1)/np.roll(B, -1, axis=1)
+
+        bwd = compute_circularBwd(input_img, A)
+        fwd = compute_circularFwd(bwd, B, C)
+        return fwd
+
+
+def tikhonov1D_x(input_img, W, mode='truncate'):
     img = np.transpose(input_img)
     Wx = np.transpose(W)
-    res = tikhonov1D_y(img, Wx)
+    res = tikhonov1D_y(img, Wx, mode=mode)
     return np.transpose(res)
 
 
