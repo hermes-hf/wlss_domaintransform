@@ -37,55 +37,127 @@ def linearSolveBwd(A11, A12, A21, A22):
     return A12/(A22-A11)
 
 
-def applyDomainTransformFilter_yaxis(a, dt, input_img, normalize=True):
+def compute_circularFwd_dtf(input_img, a, dt):
+    M, N = np.shape(input_img)
     fwd = input_img*0
-    bwd = input_img*0
-    N, M = np.shape(input_img)
 
-    # fwd pass
-    fwd[:, 0] = a[:, 0]*input_img[:, 0]
-    for y in range(1, M):
+    A11 = a[:, 0]*0 + 1
+    A12 = 0*A11
+    A21 = 0*A11
+    A22 = 1*A11
+
+    for y in range(N):
+        B11 = np.exp(abs(dt[:, (y+1) % N]))
+        B12 = -input_img[:, (y+1) % N] * \
+            np.exp(abs(dt[:, (y+1) % N]))*a[:, (y+1) % N]
+        B21 = A11*0
+        B22 = 1
+
+        A11, A12, A21, A22 = multiply2by2(
+            A11, A12, A21, A22, B11, B12, B21, B22)
+        A11, A12, A21, A22 = normalize2by2(A11, A12, A21, A22)
+    # solve linear equation for fwd[0]
+    fwd[:, 0] = linearSolveBwd(A11, A12, A21, A22)
+
+    # compute other poitns from fwd[0]
+    for y in range(1, N):
         fwd[:, y] = a[:, y]*input_img[:, y] + \
             np.exp(-abs(dt[:, y]))*fwd[:, y-1]
 
+    return fwd
+
+
+def compute_circularBwd_dtf(input_img, a, dt):
+    M, N = np.shape(input_img)
+    bwd = input_img*0
+
+    A11 = a[:, 0]*0 + 1
+    A12 = 0*A11
+    A21 = 0*A11
+    A22 = 1*A11
+
+    for k in range(N):
+        y = (0-k) % N
+        B11 = np.exp(abs(dt[:, y % N]))
+        B12 = -input_img[:, y % N]*a[:, y % N]
+        B21 = A11*0
+        B22 = 1
+
+        A11, A12, A21, A22 = multiply2by2(
+            A11, A12, A21, A22, B11, B12, B21, B22)
+        A11, A12, A21, A22 = normalize2by2(A11, A12, A21, A22)
+    # solve linear equation for bwd[0]
+    bwd[:, 0] = linearSolveBwd(A11, A12, A21, A22)
+
+    # compute other poitns from bwd[0]
     # bwd pass
-    for y in range(M-2, -1, -1):
+    bwd[:, N-1] = a[:, 0]*input_img[:, 0] * \
+        np.exp(-abs(dt[:, 0])) + np.exp(-abs(dt[:, 0]))*bwd[:, 0]
+    for y in range(N-2, 0, -1):
         bwd[:, y] = a[:, y+1]*input_img[:, y+1] * \
             np.exp(-abs(dt[:, y+1])) + np.exp(-abs(dt[:, y+1]))*bwd[:, y+1]
+    return bwd
+
+
+def applyDomainTransformFilter_yaxis(a, dt, input_img, normalize=True, mode='truncate'):
+    if mode == 'truncate':
+        fwd = input_img*0
+        bwd = input_img*0
+        M, N = np.shape(input_img)
+
+        # fwd pass
+        fwd[:, 0] = a[:, 0]*input_img[:, 0]
+        for y in range(1, N):
+            fwd[:, y] = a[:, y]*input_img[:, y] + \
+                np.exp(-abs(dt[:, y]))*fwd[:, y-1]
+
+        # bwd pass
+        for y in range(N-2, -1, -1):
+            bwd[:, y] = a[:, y+1]*input_img[:, y+1] * \
+                np.exp(-abs(dt[:, y+1])) + np.exp(-abs(dt[:, y+1]))*bwd[:, y+1]
+    elif mode == 'circular':
+        fwd = compute_circularFwd_dtf(input_img, a, dt)
+        bwd = compute_circularBwd_dtf(input_img, a, dt)
     if normalize:
         return a*(fwd + bwd)
     else:
         return (fwd + bwd)
 
 
-def applyDomainTransformFilter_xaxis(a, dt, input_img, normalize=True):
+def applyDomainTransformFilter_xaxis(a, dt, input_img, normalize=True, mode='truncate'):
     img = applyDomainTransformFilter_yaxis(np.transpose(a),
-                                           np.transpose(dt), np.transpose(input_img), normalize)
+                                           np.transpose(dt), np.transpose(input_img), normalize, mode=mode)
     return np.transpose(img)
 
 
-def getDomainTransformCoefficients(luminance, sigma_s, sigma_r, alpha_r, tol=1e-3):
+def getDomainTransformCoefficients(luminance, sigma_s, sigma_r, alpha_r, tol=1e-3, mode='truncate'):
     N, M = np.shape(luminance)
     ones_mat = np.ones((N, M))
     success = False
 
     sigma_h = np.sqrt(2)
-    dt_x = luminance*0
-    dt_y = luminance*0
 
-    dimg_dx = luminance*0
-    dimg_dx[1:, :] = luminance[1:, :] - luminance[0:-1, :]
+    if mode == 'truncate':
+        dimg_dx = luminance*0
+        dimg_dx[1:, :] = luminance[1:, :] - luminance[0:-1, :]
 
-    dimg_dy = luminance*0
-    dimg_dy[:, 1:] = luminance[:, 1:] - luminance[:, 0:-1]
+        dimg_dy = luminance*0
+        dimg_dy[:, 1:] = luminance[:, 1:] - luminance[:, 0:-1]
 
-    dt_x = np.sqrt((sigma_h/sigma_s)**2 +
-                   (sigma_h/sigma_r * abs(dimg_dx)**alpha_r)**2)
-    dt_y = np.sqrt((sigma_h/sigma_s)**2 +
-                   (sigma_h/sigma_r * abs(dimg_dy)**alpha_r)**2)
+        dt_x = np.sqrt((sigma_h/sigma_s)**2 +
+                       (sigma_h/sigma_r * abs(dimg_dx)**alpha_r)**2)
+        dt_y = np.sqrt((sigma_h/sigma_s)**2 +
+                       (sigma_h/sigma_r * abs(dimg_dy)**alpha_r)**2)
 
-    dt_x[0, :] = 0
-    dt_y[:, 0] = 0
+        dt_x[0, :] = 1e10
+        dt_y[:, 0] = 1e10
+    elif mode == 'circular':
+        dimg_dx = luminance - np.roll(luminance, 1, axis=0)
+        dimg_dy = luminance - np.roll(luminance, 1, axis=1)
+        dt_x = np.sqrt((sigma_h/sigma_s)**2 +
+                       (sigma_h/sigma_r * abs(dimg_dx)**alpha_r)**2)
+        dt_y = np.sqrt((sigma_h/sigma_s)**2 +
+                       (sigma_h/sigma_r * abs(dimg_dy)**alpha_r)**2)
 
     ax = luminance*0 + 1
     ay = luminance*0 + 1
@@ -96,9 +168,9 @@ def getDomainTransformCoefficients(luminance, sigma_s, sigma_r, alpha_r, tol=1e-
     while err > tol and it < max_it:
         it += 1
         filtered_y = applyDomainTransformFilter_yaxis(
-            ay, dt_y, ones_mat, normalize=False)
+            ay, dt_y, ones_mat, normalize=False, mode=mode)
         filtered_x = applyDomainTransformFilter_xaxis(
-            ax, dt_x, ones_mat, normalize=False)
+            ax, dt_x, ones_mat, normalize=False, mode=mode)
         # check tolerance
         if it % 5 == 0:
             err_y = np.linalg.norm(filtered_y*ay-ones_mat) / \
@@ -113,40 +185,22 @@ def getDomainTransformCoefficients(luminance, sigma_s, sigma_r, alpha_r, tol=1e-
     else:
         success = True
 
-    Wx = ax*0
-    Wy = ay*0
+    if mode == 'truncate':
+        Wx = ax*0
+        Wy = ay*0
 
-    Wx[1:, :] = np.exp(-abs(dt_x[1:, :])) / \
-        (1 - np.exp(-2*abs(dt_x[1:, :])))/(ax[1:, :]*ax[0:-1, :])
-    Wy[:, 1:] = np.exp(-abs(dt_y[:, 1:])) / \
-        (1 - np.exp(-2*abs(dt_y[:, 1:])))/(ay[:, 1:]*ay[:, 0:-1])
+        Wx[1:, :] = np.exp(-abs(dt_x[1:, :])) / \
+            (1 - np.exp(-2*abs(dt_x[1:, :])))/(ax[1:, :]*ax[0:-1, :])
+        Wy[:, 1:] = np.exp(-abs(dt_y[:, 1:])) / \
+            (1 - np.exp(-2*abs(dt_y[:, 1:])))/(ay[:, 1:]*ay[:, 0:-1])
+
+    elif mode == 'circular':
+        Wx = np.exp(-abs(dt_x)) / \
+            (1 - np.exp(-2*abs(dt_x)))/(ax * np.roll(ax, 1, axis=0))
+        Wy = np.exp(-abs(dt_y)) / \
+            (1 - np.exp(-2*abs(dt_y)))/(ay * np.roll(ay, 1, axis=0))
 
     return ax, ay, dt_x, dt_y, Wx, Wy, success
-
-
-def get1D_DomainTransformCoefficients(N, dt_y, tol=1e-3):
-    ones_mat = np.ones((1, N))
-    ay = ones_mat*1
-
-    it = 0
-    err = 1
-    max_it = 1000
-    while err > tol and it < max_it:
-        it += 1
-        filtered_y = applyDomainTransformFilter_yaxis(
-            ay, dt_y, ones_mat, normalize=False)
-        # check tolerance
-        if it % 5 == 0:
-            err = np.linalg.norm(filtered_y*ay-ones_mat) / \
-                np.linalg.norm(ones_mat)
-        ay = (ay + 1/filtered_y)/2.0
-
-    Wy = ay*0
-
-    Wy[:, 1:] = np.exp(-abs(dt_y[:, 1:])) / \
-        (1 - np.exp(-2*abs(dt_y[:, 1:])))/(ay[:, 1:]*ay[:, 0:-1])
-
-    return ay, Wy
 
 
 def compute_circularB(W):
@@ -293,13 +347,13 @@ def tikhonov1D_x(input_img, W, mode='truncate'):
     return np.transpose(res)
 
 
-def admm_method_gastal(input_img, sigma_s, sigma_r, alpha_r, tol=1e-3, rho=10, bound=0, channels=1):
+def admm_method_gastal(input_img, sigma_s, sigma_r, alpha_r, tol=1e-3, rho=10, bound=0, channels=1, mode='truncate'):
 
     luminance = vis.get_luminance(input_img)
 
     mono_image = luminance*0
     ax, ay, dt_x, dt_y, Wx, Wy, success = getDomainTransformCoefficients(
-        luminance, sigma_s, sigma_r, alpha_r, tol=tol)
+        luminance, sigma_s, sigma_r, alpha_r, tol=tol, mode=mode)
     max_it = 10000
     output_image = input_img*0
     output_data = dict()
@@ -320,8 +374,10 @@ def admm_method_gastal(input_img, sigma_s, sigma_r, alpha_r, tol=1e-3, rho=10, b
         it = 0
         err = 1.0
         while (err > tol) and (it < max_it):
-            X = tikhonov1D_x((mono_image + rho*Y - U)/(1+rho), 2*Wx/(1+rho))
-            Y = tikhonov1D_y((mono_image + rho*X + U)/(1+rho), 2*Wy/(1+rho))
+            X = tikhonov1D_x((mono_image + rho*Y - U) /
+                             (1+rho), 2*Wx/(1+rho), mode=mode)
+            Y = tikhonov1D_y((mono_image + rho*X + U) /
+                             (1+rho), 2*Wy/(1+rho), mode=mode)
             U = U + rho*(X-Y)
             it += 1
             # check error each 10 iterations
